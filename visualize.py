@@ -1,11 +1,11 @@
 import sys
 import genotypes
 from graphviz import Digraph
+import os
 
-
-def plot(genotype, filename):
+def plot(genotype, filename, epoch,pytorch_total_params_train,lambda_a,target,gamma):
   g = Digraph(
-      format='pdf',
+      format='png',
       edge_attr=dict(fontsize='20', fontname="times"),
       node_attr=dict(style='filled', shape='rect', align='center', fontsize='20', height='0.5', width='0.5', penwidth='2', fontname="times"),
       engine='dot')
@@ -35,7 +35,15 @@ def plot(genotype, filename):
   for i in range(steps):
     g.edge(str(i), "c_{k}", fillcolor="gray")
 
-  g.render(filename, view=True)
+  g.attr(overlap='false')
+  g.attr(label='epochs : {}   num of param : {}'.format(epoch,pytorch_total_params_train))
+  g.attr(fontsize='20')
+
+  path = "./result_vil/mult/target_test/lambda={}_target={}_gamma={}/{}/".format(lambda_a,target,gamma,filename)
+
+  if not os.path.isdir(path):
+    os.makedirs(path)
+  g.render(path+"{}".format(epoch), view=False)
 
 
 if __name__ == '__main__':
@@ -50,6 +58,6 @@ if __name__ == '__main__':
     print("{} is not specified in genotypes.py".format(genotype_name)) 
     sys.exit(1)
 
-  plot(genotype.normal, "normal")
-  plot(genotype.reduce, "reduction")
+  plot(genotype.normal, "normal",0,0)
+  plot(genotype.reduce, "reduction",0,0)
 
