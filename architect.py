@@ -2,7 +2,9 @@ import torch
 import numpy as np
 import torch.nn as nn
 from torch.autograd import Variable
-
+# from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_HALF_UP
+import logging
 
 def _concat(xs):
   return torch.cat([x.view(-1) for x in xs])
@@ -16,8 +18,13 @@ class Architect(object):
     self.model = model
     self.optimizer = torch.optim.Adam(self.model.arch_parameters(),
         lr=args.arch_learning_rate, betas=(0.5, 0.999), weight_decay=args.arch_weight_decay)
+    self.optimizer_gammas = torch.optim.SGD(self.model.arch_gammas_parameters(),
+        lr=args.gammas_learning_rate, weight_decay=False)
 
-  def _compute_unrolled_model(self, input, target, eta, network_optimizer):
+    self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer_gammas, float(args.epochs), eta_min=args.learning_rate_min)
+
+  def _compute_unrolled_model(self, input, target, eta, network_optimizer,device):
     loss = self.model._loss(input, target)
     theta = _concat(self.model.parameters()).data
     try:
@@ -25,23 +32,103 @@ class Architect(object):
     except:
       moment = torch.zeros_like(theta)
     dtheta = _concat(torch.autograd.grad(loss, self.model.parameters())).data + self.network_weight_decay*theta
-    unrolled_model = self._construct_model_from_theta(theta.sub(eta, moment+dtheta))
+    unrolled_model = self._construct_model_from_theta(theta.sub(eta, moment+dtheta),device)
     return unrolled_model
 
-  def step(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer, unrolled):
+  def step(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer, pytorch_total_params_train,step,limit_param,num_flag,unrolled):
     self.optimizer.zero_grad()
+    # print(self.model.alphas_normal)
+    # print(self.model.gammas_normal)
     if unrolled:
         self._backward_step_unrolled(input_train, target_train, input_valid, target_valid, eta, network_optimizer)
     else:
-        self._backward_step(input_valid, target_valid)
+        self._backward_step(input_valid, target_valid,pytorch_total_params_train,step,limit_param,num_flag)
     self.optimizer.step()
+    # print("after:")
+    # print(self.model.alphas_normal)
+    # print(self.model.gammas_normal)
 
-  def _backward_step(self, input_valid, target_valid):
-    loss = self.model._loss(input_valid, target_valid)
+  def param_step(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer, pytorch_total_params_train,step,limit_param, num_flag,lambda_a):
+
+
+    self.model.gammas_normal.data = self.model.alphas_normal[:,4:].clone().detach()
+    self.model.gammas_reduce.data = self.model.alphas_reduce[:,4:].clone().detach()
+
+    aa = self.model.gammas_normal.clone().detach()
+    self.optimizer_gammas.zero_grad()
+    # self.model.gammas_normal =  torch.tensor(self.model.gammas_normal + 4.0, requires_grad=True)
+
+    # np.set_printoptions(suppress=True)
+    np.set_printoptions(precision=4)
+    logging.info(self.model.alphas_normal)
+
+    # print(self.model.alphas_normal)
+
+    # print(self.model.alphas_normal.size())
+    # print(self.model.betas_reduce)
+    # print(self.model.gammas_normal)
+
+
+    # print("param:{} limit:{}".format(pytorch_total_params_train,limit_param)) 
+    # if pytorch_total_params_train > limit_param :
+    self.param_backward_step(input_valid, target_valid, pytorch_total_params_train,step,limit_param,num_flag,lambda_a)
+    
+    
+    self.optimizer_gammas.step()
+    self.scheduler.step()
+    # print(self.model.alphas_normal)
+    # print(self.model.betas_normal)
+    # print(self.model.gammas_normal)
+    bb = self.model.gammas_normal.clone().detach()
+    logging.info(aa - bb)
+    # print(aa - bb)
+    # print(self.model.alphas_reduce)
+
+
+    gammas_normal_nonparam = self.model.alphas_normal[:,:4].clone().detach()
+    gammas_reduce_nonparam = self.model.alphas_reduce[:,:4].clone().detach()
+        
+    self.model.alphas_normal.data = torch.cat([gammas_normal_nonparam,self.model.gammas_normal],dim=1)
+    self.model.alphas_reduce.data = torch.cat([gammas_reduce_nonparam,self.model.gammas_reduce],dim=1)
+    # print("after:")
+    # print(self.model.alphas_normal)
+    # print(self.model.betas_normal)
+    # print(self.model.gammas_normal)
+  
+  # def _backward_step_old(self, input_valid, target_valid,pytorch_total_params_train,step,limit_param):
+  #   loss = self.model._loss(input_valid, target_valid)
+  #   loss.backward()
+
+  def _backward_step(self, input_valid, target_valid,pytorch_total_params_train,step,limit_param,num_flag):
+    loss = self.model._loss(input_valid, target_valid,num_flag)
+    # print(loss.item())
     loss.backward()
+    # print(input_valid.grad)
+  
+  def param_backward_step(self, input_valid, target_valid,pytorch_total_params_train,step,limit_param,num_flag,lambda_a):
+    loss = self.model.param_loss(input_valid, target_valid,num_flag) 
+    # loss = loss*0.0001 + torch.tensor(pytorch_total_params_train*lambda_a)
+    # with torch.set_grad_enabled(False):
+    loss = loss*torch.tensor((pytorch_total_params_train - limit_param),requires_grad=False)*lambda_a
 
-  def _backward_step_unrolled(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer):
-    unrolled_model = self._compute_unrolled_model(input_train, target_train, eta, network_optimizer)
+    # loss = loss*0.00001 + torch.abs(torch.tensor(pytorch_total_params_train - limit_param))*lambda_a
+    # loss = loss*0.00001
+    # print("loss => {} param => {}".format(loss.item(),pytorch_total_params_train))
+    logging.info("loss => {} param => {} ".format(loss.item(),pytorch_total_params_train))
+
+    # loss.backward(retain_graph=True)
+    loss.backward()
+    # print(input_valid.grad)
+    # print(Decimal(self.model.gammas_normal.grad).quantize(Decimal(.00000000’),rounding=ROUND_HALF_UP))
+    # print("{0:.7f}".format(Decimal(self.model.gammas_normal.grad)))
+    self.model.gammas_normal.grad = abs(self.model.gammas_normal.grad)
+    self.model.gammas_reduce.grad = abs(self.model.gammas_reduce.grad)
+    self.model.betas_normal.grad = abs(self.model.betas_normal.grad)
+    self.model.betas_reduce.grad = abs(self.model.betas_normal.grad)
+    # print(self.model.gammas_normal.grad)
+
+  def _backward_step_unrolled(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer,device):
+    unrolled_model = self._compute_unrolled_model(input_train, target_train, eta, network_optimizer,device)
     unrolled_loss = unrolled_model._loss(input_valid, target_valid)
 
     unrolled_loss.backward()
@@ -58,8 +145,8 @@ class Architect(object):
       else:
         v.grad.data.copy_(g.data)
 
-  def _construct_model_from_theta(self, theta):
-    model_new = self.model.new()
+  def _construct_model_from_theta(self, theta,device):
+    model_new = self.model.new(device)
     model_dict = self.model.state_dict()
 
     params, offset = {}, 0
