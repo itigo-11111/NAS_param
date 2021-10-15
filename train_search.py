@@ -253,7 +253,11 @@ def main():
           
 
           # training
-          train_acc, train_obj, max_step, val_acc = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
+          if epoch == 1:
+            train_acc, train_obj, max_step, _ = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
+            val_acc = 0
+          else:
+            train_acc, train_obj, max_step, val_acc = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
           # logging.info('train_acc %f', train_acc)
 
           
@@ -379,7 +383,6 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
   bar.close()
   if epoch == 1:
     max_step = step
-    return top1.avg, objs.avg, max_step
   return top1.avg, objs.avg, max_step, top1_val.avg
 
 
