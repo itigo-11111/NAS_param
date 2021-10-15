@@ -72,7 +72,7 @@ parser.add_argument("--lambda_a", default=0.1, type=int, help="lambda of archite
 args = parser.parse_args()
 
 # lambda_list = [0.1,0.01,0.001,100,-0.1]
-lambda_list = [0.001,0.00001,1]
+lambda_list = [0.001,0.00001]
 gammas_list = [6e-1,6e-2,6e-3]
 # gammas_list = [6e-1]
 # lambda_list = [0.1]
@@ -80,7 +80,7 @@ gammas_list = [6e-1,6e-2,6e-3]
 # target_list = [50000,100000,200000,300000,999999] 
 
 #init_cannels=36,layers=20
-target_list = [3000000,2000000,1600000,1500000]
+target_list = [3000000,2000000,1600000]
 # target_list = [3000000]
 # target_list = [1000000]
 
@@ -102,7 +102,7 @@ def main():
         Genotype = namedtuple('Genotype', 'normal normal_concat reduce reduce_concat')
         # args.save = './result/search-{}_{}/{}/'.format(args.save_dir,args.set, tm.strftime("%Y%m%d-%H%M%S"))
         # args.save = './result/search-{}_{}/target/{}/'.format(args.save_dir,args.set, target)
-        args.save = './test_result/mult/search-{}_{}_target3/lambda={}_target={}_gamma={}/'.format(args.save_dir,args.set, args.lambda_a, args.limit_param,args.gammas_learning_rate)
+        args.save = './test_result/mult2/search-{}_{}_target3/lambda={}_target={}_gamma={}/'.format(args.save_dir,args.set, args.lambda_a, args.limit_param,args.gammas_learning_rate)
         create_dir(args.save)
         # utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
 
@@ -203,7 +203,7 @@ def main():
         csv_file_path = args.save + 'output.csv'
         with open(csv_file_path, 'w') as f:
             writer = csv.writer(f)
-            writer.writerow(['train_acc','train_loss',  'time', 'lr' ,'param', 'epoch'])
+            writer.writerow(['train_acc','train_loss',  'time', 'lr' ,'param','val_acc', 'epoch'])
         
         csv_file_path_param = args.save + 'param.csv'
         with open(csv_file_path_param, 'w') as f:
@@ -253,7 +253,7 @@ def main():
           
 
           # training
-          train_acc, train_obj, max_step = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
+          train_acc, train_obj, max_step, val_acc = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
           # logging.info('train_acc %f', train_acc)
 
           
@@ -265,7 +265,7 @@ def main():
           time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
           with open(csv_file_path, 'a') as f:
             writer = csv.writer(f)
-            writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],pytorch_total_params_train, epoch])
+            writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],pytorch_total_params_train,val_acc, epoch])
 
 
           # validation
@@ -273,8 +273,8 @@ def main():
             if args.epochs-epoch<=1:
               valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device,num_flag)
             now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-            logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f}  Num of Param:{5} Now {6}'.format(\
-                          epoch, args.epochs, train_obj, train_acc, best_train_acc,pytorch_total_params_train, now_time))
+            logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f}  Num of Param:{5} Val Acc:{6:.6f} Now {7}'.format(\
+                          epoch, args.epochs, train_obj, train_acc, best_train_acc,pytorch_total_params_train,val_acc, now_time))
             with open(csv_file_path_param, 'a') as f:
               writer = csv.writer(f)
               writer.writerow([pytorch_total_params,genotype])
@@ -315,6 +315,8 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
 
+  top1_val = utils.AvgrageMeter()
+
   bar = tqdm(desc = "Training", total = len(train_queue), leave = False)
   arcstep_flag = 0
   i = valid_queue
@@ -349,6 +351,10 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
           # arcstep_flag = 1
       else:
         architect.step(input, target, input_search, target_search, lr, optimizer,pytorch_total_params_train,step,limit_param,num_flag, unrolled=args.unrolled)
+      
+      prec1_val = utils.accuracy(input, target, topk=(1, 5))
+      top1_val.update(prec1_val.data.item(), n)
+        
 
     num_flag = 0
     optimizer.zero_grad()
@@ -365,7 +371,7 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
     top1.update(prec1.data.item(), n)
     top5.update(prec5.data.item(), n)
 
-    bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f}".format(objs.avg, top1.avg))
+    bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f} Val Acc: {1:.6f}".format(objs.avg, top1.avg, top1_val.avg))
     bar.update()
 
     # if step % args.report_freq == 0:
@@ -373,7 +379,8 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
   bar.close()
   if epoch == 1:
     max_step = step
-  return top1.avg, objs.avg, max_step
+    return top1.avg, objs.avg, max_step
+  return top1.avg, objs.avg, max_step, top1_val.avg
 
 
 def infer(valid_queue, model, criterion,device,num_flag):
