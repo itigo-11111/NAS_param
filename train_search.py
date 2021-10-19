@@ -63,7 +63,7 @@ parser.add_argument('--multigpu', default=True, action='store_true', help='If tr
 parser.add_argument('--auxiliary', action='store_true', default=False, help='use auxiliary tower')
 parser.add_argument('--auxiliary_weight', type=float, default=0.4, help='weight for auxiliary loss')
 parser.add_argument('--train_mode', action='store_true', default=False, help='use train after search')
-parser.add_argument('--val_mode', action='store_true', default=False, help='use validation and check accuracy')
+parser.add_argument('--val_mode', action='store_true', default=True, help='use validation and check accuracy')
 parser.add_argument("--seed", default=1, type=int, help="seed")
 parser.add_argument("--iteration", default=1, type=int, help="iteration")
 parser.add_argument("--id", default=1, type=int, help="sampler id")
@@ -203,7 +203,7 @@ def main():
         csv_file_path = args.save + 'output.csv'
         with open(csv_file_path, 'w') as f:
             writer = csv.writer(f)
-            writer.writerow(['train_acc','train_loss',  'time', 'lr' ,'param','val_acc', 'epoch'])
+            writer.writerow(['train_acc','train_loss',  'time', 'lr' ,'param','val_acc','val_loss', 'epoch'])
         
         csv_file_path_param = args.save + 'param.csv'
         with open(csv_file_path_param, 'w') as f:
@@ -253,11 +253,9 @@ def main():
           
 
           # training
-          if epoch == 1:
-            train_acc, train_obj, max_step, _ = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
-            val_acc = 0
-          else:
-            train_acc, train_obj, max_step, val_acc = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
+          
+          train_acc, train_obj, max_step = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
+
           # logging.info('train_acc %f', train_acc)
 
           
@@ -266,10 +264,7 @@ def main():
             if not args.val_mode:
               best_genotype = genotype
 
-          time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-          with open(csv_file_path, 'a') as f:
-            writer = csv.writer(f)
-            writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],pytorch_total_params_train,val_acc, epoch])
+
 
 
           # validation
@@ -277,8 +272,8 @@ def main():
             if args.epochs-epoch<=1:
               valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device,num_flag)
             now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-            logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f}  Num of Param:{5} Val Acc:{6:.6f} Now {7}'.format(\
-                          epoch, args.epochs, train_obj, train_acc, best_train_acc,pytorch_total_params_train,val_acc, now_time))
+            logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f}  Num of Param:{5} Now {6}'.format(\
+                          epoch, args.epochs, train_obj, train_acc, best_train_acc,pytorch_total_params_train, now_time))
             with open(csv_file_path_param, 'a') as f:
               writer = csv.writer(f)
               writer.writerow([pytorch_total_params,genotype])
@@ -301,8 +296,13 @@ def main():
               writer = csv.writer(f)
               writer.writerow([pytorch_total_params,latency,val_time,valid_acc,epoch,genotype, pytorch_total_params_train])
 
+            time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+            with open(csv_file_path, 'a') as f:
+              writer = csv.writer(f)
+              writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],pytorch_total_params_train,valid_acc,valid_obj, epoch])
 
-          utils.save(model, os.path.join(args.save, 'weights.pt'))
+
+          # utils.save(model, os.path.join(args.save, 'weights.pt'))
         end_time = tm.time()
         interval = end_time - start_time
         interval = str("time = %dh %dm %ds" % (int(interval/3600),int((interval%3600)/60),int((interval%3600)%60)))
@@ -353,12 +353,13 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
           architect.param_step(input, target, input_search, target_search, lr, optimizer,pytorch_total_params_train,step,limit_param, num_flag,lambda_a)
           # print(model.arch_parameters())
           # arcstep_flag = 1
+          # top1_val.update(acc_x.data.item(), n)
+
       else:
         architect.step(input, target, input_search, target_search, lr, optimizer,pytorch_total_params_train,step,limit_param,num_flag, unrolled=args.unrolled)
+        # top1_val.update(acc_x.data.item(), n)
       
-      prec1_val = utils.accuracy(input, target, topk=(1, 5))
-      top1_val.update(prec1_val.data.item(), n)
-        
+
 
     num_flag = 0
     optimizer.zero_grad()
@@ -375,7 +376,8 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
     top1.update(prec1.data.item(), n)
     top5.update(prec5.data.item(), n)
 
-    bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f} Val Acc: {1:.6f}".format(objs.avg, top1.avg, top1_val.avg))
+    # bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f} Val Acc: {1:.6f}".format(objs.avg, top1.avg, top1_val.avg))
+    bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f}".format(objs.avg, top1.avg))
     bar.update()
 
     # if step % args.report_freq == 0:
@@ -383,7 +385,7 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
   bar.close()
   if epoch == 1:
     max_step = step
-  return top1.avg, objs.avg, max_step, top1_val.avg
+  return top1.avg, objs.avg, max_step
 
 
 def infer(valid_queue, model, criterion,device,num_flag):
