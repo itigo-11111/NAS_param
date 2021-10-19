@@ -180,7 +180,7 @@ def main():
   # train_fractal = DBLoader(args.data,'TRAIN',train_transform)
   train_queue = torch.utils.data.DataLoader(dataset=train_fractal, batch_size=args.batch_size,
                                           shuffle=True, num_workers=args.num_workers,
-                                          pin_memory=Flase, drop_last=True, worker_init_fn=worker_init_fn)
+                                          pin_memory=False, drop_last=True, worker_init_fn=worker_init_fn)
 
   val_transform = transforms.Compose([
                     transforms.Resize(args.img_size),
