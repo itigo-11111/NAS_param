@@ -68,11 +68,11 @@ parser.add_argument("--seed", default=1, type=int, help="seed")
 parser.add_argument("--iteration", default=1, type=int, help="iteration")
 parser.add_argument("--id", default=1, type=int, help="sampler id")
 parser.add_argument("--limit_param", default=1500000, type=int, help="upper limit of params")
-parser.add_argument("--lambda_a", default=0.1, type=int, help="lambda of architecture")
+parser.add_argument("--lambda_a", default=0.1, type=float, help="lambda of architecture")
 args = parser.parse_args()
 
 # lambda_list = [0.1,0.01,0.001,100,-0.1]
-lambda_list = [0.001,0.00001]
+lambda_list = [0.01,0.001,0.0001,0.00001]
 gammas_list = [6e-1,6e-2,6e-3]
 # gammas_list = [6e-1]
 # lambda_list = [0.1]
@@ -89,230 +89,226 @@ def main():
   args.img_size = (32, 32)
 
   
-  for target in target_list:
-    args.limit_param = target
-    for lambda_a in lambda_list:
-      for gammas in gammas_list:
-        args.gammas_learning_rate = gammas
+  # for target in target_list:
+  #   args.limit_param = target
+  #   for lambda_a in lambda_list:
+  #     args.lambda_a = lambda_a  
+  #     for gammas in gammas_list:
+  #       args.gammas_learning_rate = gammas
 
-        # if target == 150000000 and lambda_a == 0.1:
-        #   pass
-        # else:
-        args.lambda_a = lambda_a      
-        Genotype = namedtuple('Genotype', 'normal normal_concat reduce reduce_concat')
-        # args.save = './result/search-{}_{}/{}/'.format(args.save_dir,args.set, tm.strftime("%Y%m%d-%H%M%S"))
-        # args.save = './result/search-{}_{}/target/{}/'.format(args.save_dir,args.set, target)
-        args.save = './test_result/mult2/search-{}_{}_target3/lambda={}_target={}_gamma={}/'.format(args.save_dir,args.set, args.lambda_a, args.limit_param,args.gammas_learning_rate)
-        create_dir(args.save)
-        # utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
+  Genotype = namedtuple('Genotype', 'normal normal_concat reduce reduce_concat')
+  # args.save = './result/search-{}_{}/{}/'.format(args.save_dir,args.set, tm.strftime("%Y%m%d-%H%M%S"))
+  # args.save = './result/search-{}_{}/target/{}/'.format(args.save_dir,args.set, target)
+  args.save = './test_result/mult/search-{}_{}_target3/target={}_lambda={}_gamma={}/'.format(args.save_dir,args.set, args.limit_param, args.lambda_a,args.gammas_learning_rate)
+  create_dir(args.save)
+  # utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
 
-        log_format = '%(asctime)s %(message)s'
-        logging.basicConfig(stream=sys.stdout, level=logging.INFO,
-            format=log_format, datefmt='%m/%d %I:%M:%S %p')
-        fh = logging.FileHandler(os.path.join(args.save, 'log.txt'))
-        fh.setFormatter(logging.Formatter(log_format))
-        logging.getLogger().addHandler(fh)
+  log_format = '%(asctime)s %(message)s'
+  logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+      format=log_format, datefmt='%m/%d %I:%M:%S %p')
+  fh = logging.FileHandler(os.path.join(args.save, 'log.txt'))
+  fh.setFormatter(logging.Formatter(log_format))
+  logging.getLogger().addHandler(fh)
 
-        CIFAR_CLASSES = 10
-        if args.set=='cifar100':
-            CIFAR_CLASSES = 100
-        args.seed = args.id *1000 + args.iteration
-        if not torch.cuda.is_available():
-          logging.info('no gpu device available')
-          sys.exit(1)
+  CIFAR_CLASSES = 10
+  if args.set=='cifar100':
+      CIFAR_CLASSES = 100
+  args.seed = args.id *1000 + args.iteration
+  if not torch.cuda.is_available():
+    logging.info('no gpu device available')
+    sys.exit(1)
 
-        random.seed(args.seed)
-        torch.cuda.set_device(args.gpu)
-        # cudnn.benchmark = True
-        torch.manual_seed(args.seed)
-        cudnn.enabled=True
-        # torch.cuda.manual_seed(args.seed)
-        logging.info('gpu device = %d' % args.gpu)
-        logging.info("args = %s", args)
-        start_time = tm.time()
-        use_cuda = torch.cuda.is_available()
-        device = torch.device("cuda" if use_cuda else "cpu")
-        num_flag = 0
+  random.seed(args.seed)
+  torch.cuda.set_device(args.gpu)
+  # cudnn.benchmark = True
+  torch.manual_seed(args.seed)
+  cudnn.enabled=True
+  # torch.cuda.manual_seed(args.seed)
+  logging.info('gpu device = %d' % args.gpu)
+  logging.info("args = %s", args)
+  start_time = tm.time()
+  use_cuda = torch.cuda.is_available()
+  device = torch.device("cuda" if use_cuda else "cpu")
+  num_flag = 0
 
-        criterion = nn.CrossEntropyLoss()
-        criterion = criterion.to(device)
-        model = Network(num_flag,device,args.init_channels, CIFAR_CLASSES, args.layers, criterion)
-        # model = torch.nn.DataParallel(model)
-        model = model.to(device)
-        logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
-        def worker_init_fn(worker_id):
-          random.seed(worker_id+args.seed)
+  criterion = nn.CrossEntropyLoss()
+  criterion = criterion.to(device)
+  model = Network(num_flag,device,args.init_channels, CIFAR_CLASSES, args.layers, criterion)
+  # model = torch.nn.DataParallel(model)
+  model = model.to(device)
+  logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
+  def worker_init_fn(worker_id):
+    random.seed(worker_id+args.seed)
 
-        optimizer = torch.optim.SGD(
-            model.parameters(),
-            args.learning_rate,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay)
+  optimizer = torch.optim.SGD(
+      model.parameters(),
+      args.learning_rate,
+      momentum=args.momentum,
+      weight_decay=args.weight_decay)
 
-        # train_transform, valid_transform = utils._data_transforms_cifar10(args)
-        # if args.set=='cifar100':
-        #     train_data = dset.CIFAR100(root=args.data, train=True, download=True, transform=train_transform)
-        # else:
-        #     train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
+  # train_transform, valid_transform = utils._data_transforms_cifar10(args)
+  # if args.set=='cifar100':
+  #     train_data = dset.CIFAR100(root=args.data, train=True, download=True, transform=train_transform)
+  # else:
+  #     train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
 
-        # num_train = len(train_data)
-        # indices = list(range(num_train))
-        # split = int(np.floor(args.train_portion * num_train))
+  # num_train = len(train_data)
+  # indices = list(range(num_train))
+  # split = int(np.floor(args.train_portion * num_train))
 
-        # train_queue = torch.utils.data.DataLoader(
-        #     train_data, batch_size=args.batch_size,
-        #     sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
-        #     pin_memory=True, num_workers=2)
+  # train_queue = torch.utils.data.DataLoader(
+  #     train_data, batch_size=args.batch_size,
+  #     sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
+  #     pin_memory=True, num_workers=2)
 
 
-        # valid_queue = torch.utils.data.DataLoader(
-        #     train_data, batch_size=args.batch_size,
-        #     sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[split:num_train]),
-        #     pin_memory=True, num_workers=2)
+  # valid_queue = torch.utils.data.DataLoader(
+  #     train_data, batch_size=args.batch_size,
+  #     sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[split:num_train]),
+  #     pin_memory=True, num_workers=2)
 
-        train_transform = transforms.Compose([
-                            transforms.Resize(args.img_size),
-                            transforms.Pad(4, padding_mode = 'reflect'),
-                            transforms.RandomCrop(args.img_size),
-                            transforms.RandomHorizontalFlip(),
-                            transforms.ToTensor(),
-                            # transforms.Normalize((-0.0891, 0.0698, 0.3051), (1.1908, 1.1972, 1.1822))])
-                            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+  train_transform = transforms.Compose([
+                      transforms.Resize(args.img_size),
+                      transforms.Pad(4, padding_mode = 'reflect'),
+                      transforms.RandomCrop(args.img_size),
+                      transforms.RandomHorizontalFlip(),
+                      transforms.ToTensor(),
+                      # transforms.Normalize((-0.0891, 0.0698, 0.3051), (1.1908, 1.1972, 1.1822))])
+                      transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
-        train_fractal = dset.ImageFolder(os.path.join(args.data, 'train'),transform=train_transform)
-        # train_fractal = DBLoader(args.data,'TRAIN',train_transform)
-        train_queue = torch.utils.data.DataLoader(dataset=train_fractal, batch_size=args.batch_size,
-                                                shuffle=True, num_workers=args.num_workers,
-                                                pin_memory=True, drop_last=True, worker_init_fn=worker_init_fn)
+  train_fractal = dset.ImageFolder(os.path.join(args.data, 'train'),transform=train_transform)
+  # train_fractal = DBLoader(args.data,'TRAIN',train_transform)
+  train_queue = torch.utils.data.DataLoader(dataset=train_fractal, batch_size=args.batch_size,
+                                          shuffle=True, num_workers=args.num_workers,
+                                          pin_memory=Flase, drop_last=True, worker_init_fn=worker_init_fn)
 
-        val_transform = transforms.Compose([
-                          transforms.Resize(args.img_size),
-                          transforms.ToTensor(),
-                          transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-        # val_dataset = DBLoader(args.path2db,'VALIDATION',val_transform)
-        val_dataset = dset.ImageFolder(os.path.join(args.data, 'val'),transform=val_transform)
-        valid_queue = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch_size,
-                                                shuffle=False, num_workers=args.num_workers,
-                                                pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn)
+  val_transform = transforms.Compose([
+                    transforms.Resize(args.img_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+  # val_dataset = DBLoader(args.path2db,'VALIDATION',val_transform)
+  val_dataset = dset.ImageFolder(os.path.join(args.data, 'val'),transform=val_transform)
+  valid_queue = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch_size,
+                                          shuffle=False, num_workers=args.num_workers,
+                                          pin_memory=False, drop_last=False, worker_init_fn=worker_init_fn)
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-              optimizer, float(args.epochs), eta_min=args.learning_rate_min)
+  scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, float(args.epochs), eta_min=args.learning_rate_min)
 
-        architect = Architect(model, args)
+  architect = Architect(model, args)
+  csv_file_path = args.save + 'output.csv'
+  with open(csv_file_path, 'w') as f:
+      writer = csv.writer(f)
+      writer.writerow(['train_acc','train_loss',  'time', 'lr' ,'param','val_acc','val_loss', 'epoch'])
+  
+  csv_file_path_param = args.save + 'param.csv'
+  with open(csv_file_path_param, 'w') as f:
+    writer = csv.writer(f)
+    # writer.writerow(['param_size','latency', 'val_time', 'val_acc' , 'epoch','model','param_train'])
+    writer.writerow(['param_size','model'])
+  best_acc, best_train_acc = 0.0, 0.0
+  pytorch_total_params_train, max_step = 0, 0
+  for epoch in range(1, args.epochs + 1):
+    if epoch != 1:
+      scheduler.step()
+    lr = scheduler.get_last_lr()[0]
+    # logging.info('epoch %d lr %e', epoch, lr)
 
-        csv_file_path = args.save + 'output.csv'
-        with open(csv_file_path, 'w') as f:
-            writer = csv.writer(f)
-            writer.writerow(['train_acc','train_loss',  'time', 'lr' ,'param','val_acc','val_loss', 'epoch'])
+    genotype = model.genotype()
+    # model2 = Network2(args.init_channels, CIFAR_CLASSES, args.layers, args.auxiliary, genotype)
+    model2 = Network2(36, CIFAR_CLASSES, 20, args.auxiliary, genotype)
+    pytorch_total_params = sum(p.numel() for p in model2.parameters())
+    pytorch_total_params_train = sum(p.numel() for p in model2.parameters() if p.requires_grad)
+    # model2.drop_path_prob = args.drop_path_prob * epoch / args.epochs
+    # print(model2.drop_path_prob)
+    # summary(model2,(3,32,32))
+
+    
+    vis.plot(genotype.normal, "normal", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
+    vis.plot(genotype.reduce, "reduce", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
+    
+    # prev_num = 0
+    # for i in range(1,10):
+    #   genotype = Genotype(normal=[('max_pool_3x3', 0), ('avg_pool_3x3', 1), ('max_pool_3x3', 0), ('max_pool_3x3', 2), ('skip_connect', 3), ('avg_pool_3x3', 2), ('max_pool_3x3', 4), ('avg_pool_3x3', 3)], normal_concat=range(2, 6), reduce=[('avg_pool_3x3', 1), ('avg_pool_3x3', 0), ('skip_connect', 0), ('max_pool_3x3', 2), ('max_pool_3x3', 3), ('skip_connect', 2), ('max_pool_3x3', 4), ('skip_connect', 3)], reduce_concat=range(2, 6))
+    #   model3 = Network2(args.init_channels, CIFAR_CLASSES, i, args.auxiliary, genotype)
+    #   model3 = model3.to(device)
+      
+    #   pytorch_total_params3 = sum(p.numel() for p in model3.parameters()) 
+    #   if not i > 1:
+    #     model3.drop_path_prob = args.drop_path_prob * epoch / args.epochs
+    #     summary(model3,(3,32,32))
+    #   # print("layers:{}=>{} ({})".format(i,pytorch_total_params3,pytorch_total_params3-prev_num))
+    #   prev_num = pytorch_total_params3
+
+    # print(aa)
+    # summary(model2,(3,32,32))
+    # logging.info('genotype = %s', genotype)
+
+    #print(F.softmax(model.alphas_normal, dim=-1))
+    #print(F.softmax(model.alphas_reduce, dim=-1))
+    
+
+    # training
+    
+    train_acc, train_obj, max_step = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
+
+    # logging.info('train_acc %f', train_acc)
+
+    
+    if train_acc > best_train_acc:
+      best_train_acc = train_acc
+      if not args.val_mode:
+        best_genotype = genotype
+
+
+
+
+    # validation
+    if not args.val_mode:
+      if args.epochs-epoch<=1:
+        valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device,num_flag)
+      now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+      logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f}  Num of Param:{5} Now {6}'.format(\
+                    epoch, args.epochs, train_obj, train_acc, best_train_acc,pytorch_total_params_train, now_time))
+      with open(csv_file_path_param, 'a') as f:
+        writer = csv.writer(f)
+        writer.writerow([pytorch_total_params,genotype])
         
-        csv_file_path_param = args.save + 'param.csv'
-        with open(csv_file_path_param, 'w') as f:
-          writer = csv.writer(f)
-          # writer.writerow(['param_size','latency', 'val_time', 'val_acc' , 'epoch','model','param_train'])
-          writer.writerow(['param_size','model'])
-        best_acc, best_train_acc = 0.0, 0.0
-        pytorch_total_params_train, max_step = 0, 0
-        for epoch in range(1, args.epochs + 1):
-          if epoch != 1:
-            scheduler.step()
-          lr = scheduler.get_last_lr()[0]
-          # logging.info('epoch %d lr %e', epoch, lr)
+    else:
+      valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device,num_flag)
+      if valid_acc > best_acc:
+        best_acc = valid_acc
+        best_genotype = genotype
 
-          genotype = model.genotype()
-          # model2 = Network2(args.init_channels, CIFAR_CLASSES, args.layers, args.auxiliary, genotype)
-          model2 = Network2(36, CIFAR_CLASSES, 20, args.auxiliary, genotype)
-          pytorch_total_params = sum(p.numel() for p in model2.parameters())
-          pytorch_total_params_train = sum(p.numel() for p in model2.parameters() if p.requires_grad)
-          # model2.drop_path_prob = args.drop_path_prob * epoch / args.epochs
-          # print(model2.drop_path_prob)
-          # summary(model2,(3,32,32))
-
-          
-          vis.plot(genotype.normal, "normal", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
-          vis.plot(genotype.reduce, "reduce", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
-          
-          # prev_num = 0
-          # for i in range(1,10):
-          #   genotype = Genotype(normal=[('max_pool_3x3', 0), ('avg_pool_3x3', 1), ('max_pool_3x3', 0), ('max_pool_3x3', 2), ('skip_connect', 3), ('avg_pool_3x3', 2), ('max_pool_3x3', 4), ('avg_pool_3x3', 3)], normal_concat=range(2, 6), reduce=[('avg_pool_3x3', 1), ('avg_pool_3x3', 0), ('skip_connect', 0), ('max_pool_3x3', 2), ('max_pool_3x3', 3), ('skip_connect', 2), ('max_pool_3x3', 4), ('skip_connect', 3)], reduce_concat=range(2, 6))
-          #   model3 = Network2(args.init_channels, CIFAR_CLASSES, i, args.auxiliary, genotype)
-          #   model3 = model3.to(device)
-            
-          #   pytorch_total_params3 = sum(p.numel() for p in model3.parameters()) 
-          #   if not i > 1:
-          #     model3.drop_path_prob = args.drop_path_prob * epoch / args.epochs
-          #     summary(model3,(3,32,32))
-          #   # print("layers:{}=>{} ({})".format(i,pytorch_total_params3,pytorch_total_params3-prev_num))
-          #   prev_num = pytorch_total_params3
-
-          # print(aa)
-          # summary(model2,(3,32,32))
-          # logging.info('genotype = %s', genotype)
-
-          #print(F.softmax(model.alphas_normal, dim=-1))
-          #print(F.softmax(model.alphas_reduce, dim=-1))
-          
-
-          # training
-          
-          train_acc, train_obj, max_step = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
-
-          # logging.info('train_acc %f', train_acc)
-
-          
-          if train_acc > best_train_acc:
-            best_train_acc = train_acc
-            if not args.val_mode:
-              best_genotype = genotype
+      # pytorch_total_params = sum(p.numel() for p in model.parameters())
+      # pytorch_total_params_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+      # logging.info('number of parameters : %s (trainable only : %s)',pytorch_total_params,pytorch_total_params_train)
+      now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+      logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f} Val Loss:{5:.6f} Val Acc:{6:.6f} Best Val Acc : {7:.6f} Val time:{8:.6f} Latency:{9:.6} Num of Param:{10} Now {11} '.format(\
+                    epoch, args.epochs, train_obj, train_acc, best_train_acc, valid_obj, valid_acc, best_acc, val_time, latency, pytorch_total_params_train, now_time))
+      with open(csv_file_path_param, 'a') as f:
+        writer = csv.writer(f)
+        writer.writerow([pytorch_total_params,latency,val_time,valid_acc,epoch,genotype, pytorch_total_params_train])
+
+      time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+      with open(csv_file_path, 'a') as f:
+        writer = csv.writer(f)
+        writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],pytorch_total_params_train,valid_acc,valid_obj, epoch])
 
 
-          # validation
-          if not args.val_mode:
-            if args.epochs-epoch<=1:
-              valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device,num_flag)
-            now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-            logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f}  Num of Param:{5} Now {6}'.format(\
-                          epoch, args.epochs, train_obj, train_acc, best_train_acc,pytorch_total_params_train, now_time))
-            with open(csv_file_path_param, 'a') as f:
-              writer = csv.writer(f)
-              writer.writerow([pytorch_total_params,genotype])
-              
-          else:
-            valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device,num_flag)
-            if valid_acc > best_acc:
-              best_acc = valid_acc
-              best_genotype = genotype
-
-            # pytorch_total_params = sum(p.numel() for p in model.parameters())
-            # pytorch_total_params_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-            # logging.info('number of parameters : %s (trainable only : %s)',pytorch_total_params,pytorch_total_params_train)
-            now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-            logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f} Val Loss:{5:.6f} Val Acc:{6:.6f} Best Val Acc : {7:.6f} Val time:{8:.6f} Latency:{9:.6} Num of Param:{10} Now {11} '.format(\
-                          epoch, args.epochs, train_obj, train_acc, best_train_acc, valid_obj, valid_acc, best_acc, val_time, latency, pytorch_total_params_train, now_time))
-            with open(csv_file_path_param, 'a') as f:
-              writer = csv.writer(f)
-              writer.writerow([pytorch_total_params,latency,val_time,valid_acc,epoch,genotype, pytorch_total_params_train])
-
-            time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-            with open(csv_file_path, 'a') as f:
-              writer = csv.writer(f)
-              writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],pytorch_total_params_train,valid_acc,valid_obj, epoch])
-
-
-          # utils.save(model, os.path.join(args.save, 'weights.pt'))
-        end_time = tm.time()
-        interval = end_time - start_time
-        interval = str("time = %dh %dm %ds" % (int(interval/3600),int((interval%3600)/60),int((interval%3600)%60)))
-        with open(args.save+'time.txt', 'a') as f:
-            writer = csv.writer(f)
-            writer.writerow(['time'])
-            writer.writerow([interval])
-        if args.train_mode:
-          # val_mode ON -> use best val_acc  OFF -> use best train_acc
-          training.main(best_genotype)
+    # utils.save(model, os.path.join(args.save, 'weights.pt'))
+  end_time = tm.time()
+  interval = end_time - start_time
+  interval = str("time = %dh %dm %ds" % (int(interval/3600),int((interval%3600)/60),int((interval%3600)%60)))
+  with open(args.save+'time.txt', 'a') as f:
+      writer = csv.writer(f)
+      writer.writerow(['time'])
+      writer.writerow([interval])
+  if args.train_mode:
+    # val_mode ON -> use best val_acc  OFF -> use best train_acc
+    training.main(best_genotype)
 
 def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,limit_param,num_flag,max_step,lambda_a):
   objs = utils.AvgrageMeter()
