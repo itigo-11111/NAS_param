@@ -20,6 +20,7 @@ from torch.autograd import Variable
 from model import NetworkCIFAR as Network
 from torchvision import transforms
 from tqdm import tqdm
+# from torchsummary import summary
 
 def create_dir(path):
     if not os.path.isdir(path):
@@ -35,7 +36,7 @@ parser.add_argument('--weight_decay', type=float, default=3e-4, help='weight dec
 parser.add_argument('--report_freq', type=float, default=50, help='report frequency')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
 # 600
-parser.add_argument('--epochs', type=int, default=1, help='num of training epochs')
+parser.add_argument('--epochs', type=int, default=600, help='num of training epochs')
 parser.add_argument('--init_channels', type=int, default=36, help='num of init channels')
 parser.add_argument('--layers', type=int, default=20, help='total number of layers')
 parser.add_argument('--model_path', type=str, default='saved_models', help='path to save the model')
@@ -46,29 +47,27 @@ parser.add_argument('--cutout_length', type=int, default=16, help='cutout length
 parser.add_argument('--drop_path_prob', type=float, default=0.3, help='drop path probability')
 parser.add_argument('--save_dir', type=str, default='EXP', help='experiment name')
 # parser.add_argument('--seed', type=int, default=0, help='random seed')
-parser.add_argument('--arch', type=str, default='MyNet', help='which architecture to use')
-# parser.add_argument('--arch', type=str, default='PCDARTS', help='which architecture to use')
+# parser.add_argument('--arch', type=str, default='min_param', help='which architecture to use')
+parser.add_argument('--arch', type=str, default='PC_DARTS_cifar', help='which architecture to use')
 parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping')
 parser.add_argument("--num_workers", default=8, type=int, help="num of workers(data_loader)")
 parser.add_argument('--multigpu', default=True, action='store_true', help='If true, training is not performed.')
 parser.add_argument("--seed", default=1, type=int, help="seed")
 parser.add_argument("--iteration", default=1, type=int, help="iteration")
 parser.add_argument("--id", default=1, type=int, help="sampler id")
+parser.add_argument("--limit_param", default=1500000, type=int, help="upper limit of params")
+parser.add_argument("--lambda_a", default=0.1, type=float, help="lambda of architecture")
+parser.add_argument('--gammas_learning_rate', type=float, default=6e-2, help='learning rate for arch encoding')
 
 args = parser.parse_args()
-args.img_size = (32, 32)
 
-
-CIFAR_CLASSES = 10
-
-if args.set=='cifar100':
-    CIFAR_CLASSES = 100
-def main(genotype = eval("genotypes.%s" % args.arch),train_seed =0,train_epoch=0):
-
-  # args.save = './result/eval-{}_{}/zikken/{}/'.format(args.save,args.set, tm.strftime("%Y%m%d-%H%M%S"))
-  args.save = './result_param/eval-{}_{}/{}/{}/'.format(args.save_dir,args.set,train_seed, train_epoch)
+# def main(genotype = eval("genotypes.%s" % args.arch),tar=1500000):
+def main():
+  # args.limit_param = tar
+  args.img_size = (32, 32)
+  args.save = './result_val/eval-{}_{}/{}/'.format(args.save_dir,args.set, args.limit_param)
   create_dir(args.save)
-  # utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
+  utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
 
   log_format = '%(asctime)s %(message)s'
   logging.basicConfig(stream=sys.stdout, level=logging.INFO,
@@ -77,6 +76,10 @@ def main(genotype = eval("genotypes.%s" % args.arch),train_seed =0,train_epoch=0
   fh.setFormatter(logging.Formatter(log_format))
   logging.getLogger().addHandler(fh)
 
+  CIFAR_CLASSES = 10
+
+  if args.set=='cifar100':
+      CIFAR_CLASSES = 100
   if not torch.cuda.is_available():
     logging.info('no gpu device available')
     sys.exit(1)
@@ -88,19 +91,21 @@ def main(genotype = eval("genotypes.%s" % args.arch),train_seed =0,train_epoch=0
   torch.manual_seed(args.seed)
   # cudnn.benchmark = True
   cudnn.enabled=True
-  # logging.info('gpu device = %d' % args.gpu)
-  # logging.info("args = %s", args)
+  logging.info('gpu device = %d' % args.gpu)
+  logging.info("args = %s", args)
   start_time = tm.time()
 
   use_cuda = torch.cuda.is_available()
   device = torch.device("cuda" if use_cuda else "cpu")
   # args.arch : genotype of original paper 
-  # genotype = eval("genotypes.%s" % args.arch) 
+  args.arch = "a" + str(args.limit_param) 
+  genotype = eval("genotypes.%s" % args.arch) 
   # logging.info('genotype = %s', genotype)
   model = Network(args.init_channels, CIFAR_CLASSES, args.layers, args.auxiliary, genotype)
   model = model.to(device)
 
-  # logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
+
+  logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
   def worker_init_fn(worker_id):
       random.seed(worker_id+args.seed)
 
@@ -137,7 +142,7 @@ def main(genotype = eval("genotypes.%s" % args.arch),train_seed =0,train_epoch=0
   # train_fractal = DBLoader(args.data,'TRAIN',train_transform)
   train_queue = torch.utils.data.DataLoader(dataset=train_fractal, batch_size=args.batch_size,
                                           shuffle=True, num_workers=args.num_workers,
-                                          pin_memory=True, drop_last=True, worker_init_fn=worker_init_fn)
+                                          pin_memory=False, drop_last=True, worker_init_fn=worker_init_fn)
 
   val_transform = transforms.Compose([
                     transforms.Resize(args.img_size),
@@ -147,7 +152,7 @@ def main(genotype = eval("genotypes.%s" % args.arch),train_seed =0,train_epoch=0
   val_dataset = dset.ImageFolder(os.path.join(args.data, 'val'),transform=val_transform)
   valid_queue = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch_size,
                                           shuffle=False, num_workers=args.num_workers,
-                                          pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn)
+                                          pin_memory=False, drop_last=False, worker_init_fn=worker_init_fn)
 
   # train_queue = torch.utils.data.DataLoader(
   #     train_data, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=2)
@@ -174,10 +179,12 @@ def main(genotype = eval("genotypes.%s" % args.arch),train_seed =0,train_epoch=0
   
   for epoch in range(1, args.epochs + 1):
 
+
     if epoch != 1:
       scheduler.step()
     # logging.info('epoch %d lr %e', epoch, scheduler.get_last_lr()[0])
     model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
+    # summary(model,(3,32,32))
 
     train_acc, train_obj = train(train_queue, model, criterion, optimizer,device)
     if train_acc > best_train_acc:
@@ -204,12 +211,6 @@ def main(genotype = eval("genotypes.%s" % args.arch),train_seed =0,train_epoch=0
       writer = csv.writer(f)
       writer.writerow(['time'])
       writer.writerow([interval])
-
-  args.save_seed = './result_param/eval-{}_{}/{}/'.format(args.save_dir,args.set,train_seed)
-  csv_file_path_seed = args.save_seed + 'output.csv'
-  with open(csv_file_path_seed, 'a') as f:
-    writer = csv.writer(f)
-    writer.writerow([train_obj,train_acc,valid_obj, valid_acc, optimizer.param_groups[0]['lr'], epoch,val_time,latency,interval,train_epoch,pytorch_total_params_train,genotype])  
 
 
 def train(train_queue, model, criterion, optimizer,device):
