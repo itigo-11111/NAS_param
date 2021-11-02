@@ -1,289 +1,237 @@
-import os
-import sys
-import glob
-import numpy as np
+from numpy.core.fromnumeric import sort
 import torch
-import utils
-import logging
-import argparse
+import numpy as np
 import torch.nn as nn
-import genotypes
-import torch.utils
-import torchvision.datasets as dset
-import torch.backends.cudnn as cudnn
-import csv
-import random
-import time as tm
-import datetime
-
 from torch.autograd import Variable
-from model import NetworkCIFAR as Network
-from torchvision import transforms
-from tqdm import tqdm
-# from torchsummary import summary
+# from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_HALF_UP
+import logging
+import random
+from model import NetworkCIFAR as Network2
 
-def create_dir(path):
-    if not os.path.isdir(path):
-        os.makedirs(path)
+def _concat(xs):
+  return torch.cat([x.view(-1) for x in xs])
 
-parser = argparse.ArgumentParser("cifar")
-parser.add_argument('--data', type=str, default='./cifar10/', help='location of the data corpus')
-parser.add_argument('--set', type=str, default='cifar10', help='location of the data corpus')
-parser.add_argument('--batch_size', type=int, default=128, help='batch size')
-parser.add_argument('--learning_rate', type=float, default=0.025, help='init learning rate')
-parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
-parser.add_argument('--weight_decay', type=float, default=3e-4, help='weight decay')
-parser.add_argument('--report_freq', type=float, default=50, help='report frequency')
-parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
-# 600
-parser.add_argument('--epochs', type=int, default=600, help='num of training epochs')
-parser.add_argument('--init_channels', type=int, default=36, help='num of init channels')
-parser.add_argument('--layers', type=int, default=20, help='total number of layers')
-parser.add_argument('--model_path', type=str, default='saved_models', help='path to save the model')
-parser.add_argument('--auxiliary', action='store_true', default=False, help='use auxiliary tower')
-parser.add_argument('--auxiliary_weight', type=float, default=0.4, help='weight for auxiliary loss')
-parser.add_argument('--cutout', action='store_true', default=False, help='use cutout')
-parser.add_argument('--cutout_length', type=int, default=16, help='cutout length')
-parser.add_argument('--drop_path_prob', type=float, default=0.3, help='drop path probability')
-parser.add_argument('--save_dir', type=str, default='EXP', help='experiment name')
-# parser.add_argument('--seed', type=int, default=0, help='random seed')
-# parser.add_argument('--arch', type=str, default='min_param', help='which architecture to use')
-parser.add_argument('--arch', type=str, default='PC_DARTS_cifar', help='which architecture to use')
-parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping')
-parser.add_argument("--num_workers", default=8, type=int, help="num of workers(data_loader)")
-parser.add_argument('--multigpu', default=True, action='store_true', help='If true, training is not performed.')
-parser.add_argument("--seed", default=1, type=int, help="seed")
-parser.add_argument("--iteration", default=1, type=int, help="iteration")
-parser.add_argument("--id", default=1, type=int, help="sampler id")
-parser.add_argument("--limit_param", default=1500000, type=int, help="upper limit of params")
-parser.add_argument("--lambda_a", default=0.1, type=float, help="lambda of architecture")
-parser.add_argument('--gammas_learning_rate', type=float, default=6e-2, help='learning rate for arch encoding')
 
-args = parser.parse_args()
+class Architect(object):
 
-# def main(genotype = eval("genotypes.%s" % args.arch),tar=1500000):
-def main():
-  # args.limit_param = tar
-  args.img_size = (32, 32)
-  args.save = './result_val/eval-{}_{}/{}/'.format(args.save_dir,args.set, args.limit_param)
-  create_dir(args.save)
-  utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
+  def __init__(self, model, args):
+    self.network_momentum = args.momentum
+    self.network_weight_decay = args.weight_decay
+    self.model = model
+    self.optimizer = torch.optim.Adam(self.model.arch_parameters(),
+        lr=args.arch_learning_rate, betas=(0.5, 0.999), weight_decay=args.arch_weight_decay)
+    self.optimizer_gammas = torch.optim.SGD(self.model.arch_gammas_parameters(),
+        lr=args.gammas_learning_rate, weight_decay=args.arch_weight_decay)
+    self.auxiliary = args.auxiliary
+    self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer_gammas, float(args.epochs), eta_min=args.learning_rate_min)
 
-  log_format = '%(asctime)s %(message)s'
-  logging.basicConfig(stream=sys.stdout, level=logging.INFO,
-      format=log_format, datefmt='%m/%d %I:%M:%S %p')
-  fh = logging.FileHandler(os.path.join(args.save, 'log.txt'))
-  fh.setFormatter(logging.Formatter(log_format))
-  logging.getLogger().addHandler(fh)
+  def _compute_unrolled_model(self, input, target, eta, network_optimizer,device):
+    loss = self.model._loss(input, target)
+    theta = _concat(self.model.parameters()).data
+    try:
+      moment = _concat(network_optimizer.state[v]['momentum_buffer'] for v in self.model.parameters()).mul_(self.network_momentum)
+    except:
+      moment = torch.zeros_like(theta)
+    dtheta = _concat(torch.autograd.grad(loss, self.model.parameters())).data + self.network_weight_decay*theta
+    unrolled_model = self._construct_model_from_theta(theta.sub(eta, moment+dtheta),device)
+    return unrolled_model
 
-  CIFAR_CLASSES = 10
+  def step(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer, pytorch_total_params_train,step,limit_param,num_flag,unrolled):
+    self.optimizer.zero_grad()
+    # logging.info(self.model.alphas_normal)
+    # print(self.model.gammas_normal)
+    if unrolled:
+        self._backward_step_unrolled(input_train, target_train, input_valid, target_valid, eta, network_optimizer)
+    else:
+        self._backward_step(input_valid, target_valid,pytorch_total_params_train,step,limit_param,num_flag)
+    self.optimizer.step()
+    # print("after:")
+    # logging.info(self.model.alphas_normal)
+    # print(self.model.gammas_normal)
 
-  if args.set=='cifar100':
-      CIFAR_CLASSES = 100
-  if not torch.cuda.is_available():
-    logging.info('no gpu device available')
-    sys.exit(1)
+  def param_step(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer, pytorch_total_params_train,step,limit_param, num_flag,lambda_a,param_prev):
+
+    genotype = self.model.genotype()
+    train_param = pytorch_total_params_train
+    # if param_prev == pytorch_total_params_train: 
+     
+
+    self.model.gammas_normal.data = self.model.alphas_normal[:,4:].clone().detach()
+    self.model.gammas_reduce.data = self.model.alphas_reduce[:,4:].clone().detach()
+
+    aa = self.model.gammas_normal.clone().detach()
+
+    loot = 0
+    # self.model.gammas_normal =  torch.tensor(self.model.gammas_normal + 4.0, requires_grad=True)
+    # DropArchWeight
+    if train_param == param_prev: 
+      with torch.no_grad():
+        # normal cell
+        i = 0
+        while True:    
+          n = random.randint(0,13)
+          num = torch.argmax(self.model.alphas_normal, dim=1)[n]
+          if num > 3 or i > 20:
+            break
+          i += 1
+        # self.model.alphas_normal[n][num] = torch.max(self.model.alphas_normal[n,:].clone().detach())
+        sorted , _ = torch.sort(self.model.alphas_normal[n,:].clone().detach(),descending=True)
+        self.model.alphas_normal[n][num] = sorted[5]
+
+        # print("n:{} num:{}".format(n,num))
+
+        # reduce cell
+        i = 0
+        while True:    
+          n = random.randint(0,13)
+          num = torch.argmax(self.model.alphas_reduce, dim=1)[n]
+          if num > 3 or i > 20:
+            break
+          i += 1
+        # self.model.alphas_reduce[n][num] = torch.min(self.model.alphas_reduce[n,:].clone().detach())  
+        sorted , _ = torch.sort(self.model.alphas_reduce[n,:].clone().detach(),descending=True)
+        self.model.alphas_reduce[n][num] = sorted[5]
+
+      genotype = self.model.genotype()
+      CIFAR_CLASSES = 10
+      model3 = Network2(36, CIFAR_CLASSES, 20, self.auxiliary, genotype)
+      train_param = sum(p.numel() for p in model3.parameters() if p.requires_grad)
+      pytorch_total_params_train = train_param
+      self.model.gammas_normal.data = self.model.alphas_normal[:,4:].clone().detach()
+      self.model.gammas_reduce.data = self.model.alphas_reduce[:,4:].clone().detach()
+      loot = 1
+
+
+    self.optimizer_gammas.zero_grad()
+
+    # np.set_printoptions(suppress=True)
+    np.set_printoptions(precision=4)
+    # logging.info(self.model.alphas_normal)
+
+    # print(self.model.alphas_normal)
+
+    # print(self.model.alphas_normal.size())
+    # print(self.model.betas_reduce)
+    # print(self.model.gammas_normal)
+
+
+    # print("param:{} limit:{}".format(pytorch_total_params_train,limit_param)) 
+    if pytorch_total_params_train > limit_param :
+      self.param_backward_step(input_valid, target_valid, pytorch_total_params_train,step,limit_param,num_flag,lambda_a,loot)
     
-  args.seed = args.id *1000 + args.iteration
-
-  random.seed(args.seed)
-  torch.cuda.set_device(args.gpu)
-  torch.manual_seed(args.seed)
-  # cudnn.benchmark = True
-  cudnn.enabled=True
-  logging.info('gpu device = %d' % args.gpu)
-  logging.info("args = %s", args)
-  start_time = tm.time()
-
-  use_cuda = torch.cuda.is_available()
-  device = torch.device("cuda" if use_cuda else "cpu")
-  # args.arch : genotype of original paper 
-  args.arch = "a" + str(args.limit_param) 
-  genotype = eval("genotypes.%s" % args.arch) 
-  # logging.info('genotype = %s', genotype)
-  model = Network(args.init_channels, CIFAR_CLASSES, args.layers, args.auxiliary, genotype)
-  model = model.to(device)
+    
+      self.optimizer_gammas.step()
+      self.scheduler.step()
+      # print(self.model.alphas_normal)
+      # print(self.model.betas_normal)
+      # print(self.model.gammas_normal)
+      bb = self.model.gammas_normal.clone().detach()
+      # logging.info(self.model.alphas_normal)
+      # logging.info(aa - bb)
+      # print(aa - bb)
+      # print(self.model.alphas_reduce)
 
 
-  logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
-  def worker_init_fn(worker_id):
-      random.seed(worker_id+args.seed)
-
-
-  criterion = nn.CrossEntropyLoss()
-  criterion = criterion.to(device)
-  optimizer = torch.optim.SGD(
-      model.parameters(),
-      args.learning_rate,
-      momentum=args.momentum,
-      weight_decay=args.weight_decay
-      )
-
-  # train_transform, valid_transform = utils._data_transforms_cifar10(args)
-  # if args.set=='cifar100':
-  #     train_data = dset.CIFAR100(root=args.data, train=True, download=True, transform=train_transform)
-  #     valid_data = dset.CIFAR100(root=args.data, train=False, download=True, transform=valid_transform)
-  # else:
-  #     train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
-  #     valid_data = dset.CIFAR10(root=args.data, train=False, download=True, transform=valid_transform)
-  #train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
-  #valid_data = dset.CIFAR10(root=args.data, train=False, download=True, transform=valid_transform)
-
-  train_transform = transforms.Compose([
-                      transforms.Resize(args.img_size),
-                      transforms.Pad(4, padding_mode = 'reflect'),
-                      transforms.RandomCrop(args.img_size),
-                      transforms.RandomHorizontalFlip(),
-                      transforms.ToTensor(),
-                      # transforms.Normalize((-0.0891, 0.0698, 0.3051), (1.1908, 1.1972, 1.1822))])
-                      transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-
-  train_fractal = dset.ImageFolder(os.path.join(args.data, 'train'),transform=train_transform)
-  # train_fractal = DBLoader(args.data,'TRAIN',train_transform)
-  train_queue = torch.utils.data.DataLoader(dataset=train_fractal, batch_size=args.batch_size,
-                                          shuffle=True, num_workers=args.num_workers,
-                                          pin_memory=False, drop_last=True, worker_init_fn=worker_init_fn)
-
-  val_transform = transforms.Compose([
-                    transforms.Resize(args.img_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-  # val_dataset = DBLoader(args.path2db,'VALIDATION',val_transform)
-  val_dataset = dset.ImageFolder(os.path.join(args.data, 'val'),transform=val_transform)
-  valid_queue = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch_size,
-                                          shuffle=False, num_workers=args.num_workers,
-                                          pin_memory=False, drop_last=False, worker_init_fn=worker_init_fn)
-
-  # train_queue = torch.utils.data.DataLoader(
-  #     train_data, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=2)
-
-  # valid_queue = torch.utils.data.DataLoader(
-  #     valid_data, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=2)
-
-  scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, float(args.epochs))
-  best_train_acc = 0.0
-  best_acc = 0.0
-  csv_file_path = args.save + 'output.csv'
-  with open(csv_file_path, 'w') as f:
-    writer = csv.writer(f)
-    writer.writerow(['train_loss','train_acc','val_loss','val_acc', 'time', 'lr' , 'epoch','val_time','latency'])
-
-  pytorch_total_params = sum(p.numel() for p in model.parameters())
-  pytorch_total_params_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
-  print("number of parameters : {} (trainable only : {})".format(pytorch_total_params,pytorch_total_params_train))
+      gammas_normal_nonparam = self.model.alphas_normal[:,:4].clone().detach()
+      gammas_reduce_nonparam = self.model.alphas_reduce[:,:4].clone().detach()
+          
+      self.model.alphas_normal.data = torch.cat([gammas_normal_nonparam,self.model.gammas_normal],dim=1)
+      self.model.alphas_reduce.data = torch.cat([gammas_reduce_nonparam,self.model.gammas_reduce],dim=1)
+    else:
+      self.optimizer.zero_grad()
+      # logging.info(self.model.alphas_normal)
+      # print(self.model.gammas_normal)
+      self._backward_step(input_valid, target_valid,pytorch_total_params_train,step,limit_param,num_flag)
+      self.optimizer.step()
+    # print("after:")
+    # print(self.model.alphas_normal)
+    # print(self.model.betas_normal)
+    # print(self.model.gammas_normal)
   
-  with open(args.save+'param.txt', 'w') as f:
-    writer = csv.writer(f)
-    writer.writerow(['param_size', 'param_size_train'])
-    writer.writerow([pytorch_total_params,pytorch_total_params_train])
-  
-  for epoch in range(1, args.epochs + 1):
+  # def _backward_step_old(self, input_valid, target_valid,pytorch_total_params_train,step,limit_param):
+  #   loss = self.model._loss(input_valid, target_valid)
+  #   loss.backward()
+    return train_param,genotype
 
-
-    if epoch != 1:
-      scheduler.step()
-    # logging.info('epoch %d lr %e', epoch, scheduler.get_last_lr()[0])
-    model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
-    # summary(model,(3,32,32))
-
-    train_acc, train_obj = train(train_queue, model, criterion, optimizer,device)
-    if train_acc > best_train_acc:
-      best_train_acc = train_acc
-    # logging.info('train_acc %f, best_train_acc %f', train_acc, best_train_acc)
-
-    valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device)
-    if valid_acc > best_acc:
-        best_acc = valid_acc
-    # logging.info('valid_acc %f, best_acc %f valid_time %f', valid_acc, best_acc,valid_time)
-    now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-    print('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f} Val Loss:{5:.6f} Val Acc:{6:.6f} Best Val Acc : {7:.6f} Val time:{8:.6f} Latency:{9:.6} Now {10} '.format(\
-                  epoch, args.epochs, train_obj, train_acc, best_train_acc, valid_obj, valid_acc, best_acc,  val_time, latency, now_time))
-
-    with open(csv_file_path, 'a') as f:
-      writer = csv.writer(f)
-      writer.writerow([train_obj,train_acc,valid_obj, valid_acc, now_time, optimizer.param_groups[0]['lr'], epoch,val_time,latency])
-    utils.save(model, os.path.join(args.save, 'weights.pt'))
-
-  end_time = tm.time()
-  interval = end_time - start_time
-  interval = str("time = %dh %dm %ds" % (int(interval/3600),int((interval%3600)/60),int((interval%3600)%60)))
-  with open(args.save+'time.txt', 'a') as f:
-      writer = csv.writer(f)
-      writer.writerow(['time'])
-      writer.writerow([interval])
-
-
-def train(train_queue, model, criterion, optimizer,device):
-  objs = utils.AvgrageMeter()
-  top1 = utils.AvgrageMeter()
-  top5 = utils.AvgrageMeter()
-  model.train()
-
-  bar = tqdm(desc = "Training", total = len(train_queue), leave = False)
-  for step, (input, target) in enumerate(train_queue):
-    input = Variable(input).to(device)
-    target = Variable(target).to(device)
-
-    optimizer.zero_grad()
-    logits, logits_aux = model(input)
-    loss = criterion(logits, target)
-    if args.auxiliary:
-      loss_aux = criterion(logits_aux, target)
-      loss += args.auxiliary_weight*loss_aux
+  def _backward_step(self, input_valid, target_valid,pytorch_total_params_train,step,limit_param,num_flag):
+    loss = self.model._loss(input_valid, target_valid,num_flag)
+    # logging.info("loss => {} param => {} ".format(loss.item(),pytorch_total_params_train))
     loss.backward()
-    nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-    optimizer.step()
+    # print(input_valid.grad)
+  
+  def param_backward_step(self, input_valid, target_valid,pytorch_total_params_train,step,limit_param,num_flag,lambda_a,loot):
+    loss = self.model.param_loss(input_valid, target_valid,num_flag) 
+    # loss = loss*0.0001 + torch.tensor(pytorch_total_params_train*lambda_a)
+    # with torch.set_grad_enabled(False):
+    loss = loss*torch.tensor((pytorch_total_params_train - limit_param),requires_grad=False)*lambda_a
+    # loss = torch.exp(loss*torch.tensor((pytorch_total_params_train - limit_param)/pytorch_total_params_train))
 
-    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-    n = input.size(0)
-    objs.update(loss.data.item(), n)
-    top1.update(prec1.data.item(), n)
-    top5.update(prec5.data.item(), n)
+    # loss = loss*0.00001 + torch.abs(torch.tensor(pytorch_total_params_train - limit_param))*lambda_a
+    # loss = loss*0.00001
+    # print("loss => {} param => {}".format(loss.item(),pytorch_total_params_train))
+    # logging.info("loss => {} param => {} loot => {}".format(loss.item(),pytorch_total_params_train,loot))
 
-    bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f}".format(objs.avg, top1.avg))
-    bar.update()
-    # if step % args.report_freq == 0:
-    #   logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+    # loss.backward(retain_graph=True)
+    loss.backward()
+    # print(input_valid.grad)
+    # print(Decimal(self.model.gammas_normal.grad).quantize(Decimal(.00000000’),rounding=ROUND_HALF_UP))
+    # print("{0:.7f}".format(Decimal(self.model.gammas_normal.grad)))
+    
+    # self.model.gammas_normal.grad = abs(self.model.gammas_normal.grad)
+    # self.model.gammas_reduce.grad = abs(self.model.gammas_reduce.grad)
+    # self.model.betas_normal.grad = abs(self.model.betas_normal.grad)
+    # self.model.betas_reduce.grad = abs(self.model.betas_normal.grad)
 
-  bar.close()
-  return top1.avg, objs.avg
+    # print(self.model.gammas_normal.grad)
 
+  def _backward_step_unrolled(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer,device):
+    unrolled_model = self._compute_unrolled_model(input_train, target_train, eta, network_optimizer,device)
+    unrolled_loss = unrolled_model._loss(input_valid, target_valid)
 
-def infer(valid_queue, model, criterion,device):
-  objs = utils.AvgrageMeter()
-  top1 = utils.AvgrageMeter()
-  top5 = utils.AvgrageMeter()
-  model.eval()
-  latency_flag = 0
-  start = tm.time()
-  with torch.no_grad():
-    for step, (input, target) in enumerate(valid_queue):
-      if latency_flag == 0:
-        start_latency = tm.time()
+    unrolled_loss.backward()
+    dalpha = [v.grad for v in unrolled_model.arch_parameters()]
+    vector = [v.grad.data for v in unrolled_model.parameters()]
+    implicit_grads = self._hessian_vector_product(vector, input_train, target_train)
 
-      input = Variable(input).to(device)
-      target = Variable(target).to(device)
+    for g, ig in zip(dalpha, implicit_grads):
+      g.data.sub_(eta, ig.data)
 
-      logits, _ = model(input)
-      loss = criterion(logits, target)
+    for v, g in zip(self.model.arch_parameters(), dalpha):
+      if v.grad is None:
+        v.grad = Variable(g.data)
+      else:
+        v.grad.data.copy_(g.data)
 
-      prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-      n = input.size(0)
-      objs.update(loss.data.item(), n)
-      top1.update(prec1.data.item(), n)
-      top5.update(prec5.data.item(), n)
+  def _construct_model_from_theta(self, theta,device):
+    model_new = self.model.new(device)
+    model_dict = self.model.state_dict()
 
-      # if step % args.report_freq == 0:
-      #   logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-      if latency_flag == 0:
-        latency = tm.time() - start_latency
-        latency_flag = 1 
+    params, offset = {}, 0
+    for k, v in self.model.named_parameters():
+      v_length = np.prod(v.size())
+      params[k] = theta[offset: offset+v_length].view(v.size())
+      offset += v_length
 
+    assert offset == len(theta)
+    model_dict.update(params)
+    model_new.load_state_dict(model_dict)
+    return model_new.cuda()
 
-    elapsed_time = tm.time() - start
-    return top1.avg, objs.avg,latency*1000,elapsed_time
+  def _hessian_vector_product(self, vector, input, target, r=1e-2):
+    R = r / _concat(vector).norm()
+    for p, v in zip(self.model.parameters(), vector):
+      p.data.add_(R, v)
+    loss = self.model._loss(input, target)
+    grads_p = torch.autograd.grad(loss, self.model.arch_parameters())
 
+    for p, v in zip(self.model.parameters(), vector):
+      p.data.sub_(2*R, v)
+    loss = self.model._loss(input, target)
+    grads_n = torch.autograd.grad(loss, self.model.arch_parameters())
 
-if __name__ == '__main__':
-  main() 
+    for p, v in zip(self.model.parameters(), vector):
+      p.data.add_(R, v)
 
+    return [(x-y).div_(2*R) for x, y in zip(grads_p, grads_n)]
