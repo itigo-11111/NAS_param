@@ -35,7 +35,7 @@ def create_dir(path):
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--data', type=str, default='./cifar10/', help='location of the data corpus')
 parser.add_argument('--set', type=str, default='cifar10', help='location of the data corpus')
-parser.add_argument('--batch_size', type=int, default=512, help='batch size')
+parser.add_argument('--batch_size', type=int, default=256, help='batch size')
 parser.add_argument('--learning_rate', type=float, default=0.1, help='init learning rate')
 parser.add_argument('--learning_rate_min', type=float, default=0.0, help='min learning rate')
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
@@ -62,7 +62,7 @@ parser.add_argument("--num_workers", default=8, type=int, help="num of workers(d
 parser.add_argument('--multigpu', default=True, action='store_true', help='If true, training is not performed.')
 parser.add_argument('--auxiliary', action='store_true', default=False, help='use auxiliary tower')
 parser.add_argument('--auxiliary_weight', type=float, default=0.4, help='weight for auxiliary loss')
-parser.add_argument('--train_mode', action='store_true', default=False, help='use train after search')
+parser.add_argument('--train_mode', action='store_true', default=True, help='use train after search')
 parser.add_argument('--val_mode', action='store_true', default=True, help='use validation and check accuracy')
 parser.add_argument("--seed", default=1, type=int, help="seed")
 parser.add_argument("--iteration", default=1, type=int, help="iteration")
@@ -72,34 +72,25 @@ parser.add_argument("--lambda_a", default=0.1, type=float, help="lambda of archi
 args = parser.parse_args()
 
 # lambda_list = [0.1,0.01,0.001,100,-0.1]
-lambda_list = [0.01,0.001,0.0001,0.00001]
-gammas_list = [6e-1,6e-2,6e-3]
-# gammas_list = [6e-1]
+lambda_list = [0.001]
+# gammas_list = [6e-1,6e-2,6e-3,6e-4]
+gammas_list = [6e-4]
 # lambda_list = [0.1]
 #init_cannels=16,layers=8
 # target_list = [50000,100000,200000,300000,999999] 
 
 #init_cannels=36,layers=20
-target_list = [3000000,2000000,1600000]
+target_list = [1600000,2000000,3000000]
 # target_list = [3000000]
 # target_list = [1000000]
 
 def main():
        
   args.img_size = (32, 32)
-
-  
-  # for target in target_list:
-  #   args.limit_param = target
-  #   for lambda_a in lambda_list:
-  #     args.lambda_a = lambda_a  
-  #     for gammas in gammas_list:
-  #       args.gammas_learning_rate = gammas
-
   Genotype = namedtuple('Genotype', 'normal normal_concat reduce reduce_concat')
   # args.save = './result/search-{}_{}/{}/'.format(args.save_dir,args.set, tm.strftime("%Y%m%d-%H%M%S"))
   # args.save = './result/search-{}_{}/target/{}/'.format(args.save_dir,args.set, target)
-  args.save = './test_result/mult/search-{}_{}_target3/target={}_lambda={}_gamma={}/'.format(args.save_dir,args.set, args.limit_param, args.lambda_a,args.gammas_learning_rate)
+  args.save = './test_result/mult4/search-{}_{}_target3/target={}_lambda={}_gamma={}/'.format(args.save_dir,args.set, args.limit_param, args.lambda_a,args.gammas_learning_rate)
   create_dir(args.save)
   # utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
 
@@ -204,10 +195,17 @@ def main():
   csv_file_path_param = args.save + 'param.csv'
   with open(csv_file_path_param, 'w') as f:
     writer = csv.writer(f)
-    # writer.writerow(['param_size','latency', 'val_time', 'val_acc' , 'epoch','model','param_train'])
-    writer.writerow(['param_size','model'])
+    writer.writerow(['param','latency', 'val_time', 'val_acc' , 'epoch','model','param_size'])
+    # writer.writerow(['param','model','param_size'])
+
+  csv_file_path_param_ite = args.save + 'param_ite.csv'
+  with open(csv_file_path_param_ite, 'w') as f:
+    writer = csv.writer(f)
+    # writer.writerow(['param','latency', 'val_time', 'val_acc' , 'epoch','model','param_train'])
+    writer.writerow(['param','model','train_loss','train_acc','epoch'])
+
   best_acc, best_train_acc = 0.0, 0.0
-  pytorch_total_params_train, max_step = 0, 0
+  pytorch_total_params_train, max_step , param_prev = 0, 0, 0
   for epoch in range(1, args.epochs + 1):
     if epoch != 1:
       scheduler.step()
@@ -223,9 +221,7 @@ def main():
     # print(model2.drop_path_prob)
     # summary(model2,(3,32,32))
 
-    
-    vis.plot(genotype.normal, "normal", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
-    vis.plot(genotype.reduce, "reduce", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
+  
     
     # prev_num = 0
     # for i in range(1,10):
@@ -250,18 +246,17 @@ def main():
 
     # training
     
-    train_acc, train_obj, max_step = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a)
-
+    train_acc, train_obj, max_step,train_param,genotype = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,args.limit_param,num_flag,max_step,args.lambda_a,param_prev,genotype,csv_file_path_param_ite)
+    param_prev = train_param
     # logging.info('train_acc %f', train_acc)
 
+    vis.plot(genotype.normal, "normal", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
+    vis.plot(genotype.reduce, "reduce", epoch,pytorch_total_params_train,args.lambda_a,args.limit_param,args.gammas_learning_rate)
     
-    if train_acc > best_train_acc:
+    if train_acc > best_train_acc and param_prev > args.limit_param :
       best_train_acc = train_acc
       if not args.val_mode:
         best_genotype = genotype
-
-
-
 
     # validation
     if not args.val_mode:
@@ -269,7 +264,7 @@ def main():
         valid_acc, valid_obj,latency,val_time = infer(valid_queue, model, criterion,device,num_flag)
       now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
       logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f}  Num of Param:{5} Now {6}'.format(\
-                    epoch, args.epochs, train_obj, train_acc, best_train_acc,pytorch_total_params_train, now_time))
+                    epoch, args.epochs, train_obj, train_acc, best_train_acc,param_prev, now_time))
       with open(csv_file_path_param, 'a') as f:
         writer = csv.writer(f)
         writer.writerow([pytorch_total_params,genotype])
@@ -287,15 +282,15 @@ def main():
       # logging.info('number of parameters : %s (trainable only : %s)',pytorch_total_params,pytorch_total_params_train)
       now_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
       logging.info('Epoch[{0:03}/{1:03}]  Train Loss:{2:.6f} Train Acc:{3:.6f} Best Train Acc:{4:.6f} Val Loss:{5:.6f} Val Acc:{6:.6f} Best Val Acc : {7:.6f} Val time:{8:.6f} Latency:{9:.6} Num of Param:{10} Now {11} '.format(\
-                    epoch, args.epochs, train_obj, train_acc, best_train_acc, valid_obj, valid_acc, best_acc, val_time, latency, pytorch_total_params_train, now_time))
+                    epoch, args.epochs, train_obj, train_acc, best_train_acc, valid_obj, valid_acc, best_acc, val_time, latency, param_prev, now_time))
       with open(csv_file_path_param, 'a') as f:
         writer = csv.writer(f)
-        writer.writerow([pytorch_total_params,latency,val_time,valid_acc,epoch,genotype, pytorch_total_params_train])
+        writer.writerow([param_prev,latency,val_time,valid_acc,epoch,genotype, utils.count_parameters_in_MB(model)])
 
       time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
       with open(csv_file_path, 'a') as f:
         writer = csv.writer(f)
-        writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],pytorch_total_params_train,valid_acc,valid_obj, epoch])
+        writer.writerow([train_acc, train_obj,  time, optimizer.param_groups[0]['lr'],param_prev,valid_acc,valid_obj, epoch])
 
 
     # utils.save(model, os.path.join(args.save, 'weights.pt'))
@@ -308,18 +303,19 @@ def main():
       writer.writerow([interval])
   if args.train_mode:
     # val_mode ON -> use best val_acc  OFF -> use best train_acc
-    training.main(best_genotype)
+    training.main(best_genotype,args.limit_param)
 
-def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,limit_param,num_flag,max_step,lambda_a):
+def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,epoch,device,pytorch_total_params_train,limit_param,num_flag,max_step,lambda_a,param_prev,genotype,csv_file_path_param_ite):
   objs = utils.AvgrageMeter()
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
-
-  top1_val = utils.AvgrageMeter()
+  param = utils.AvgrageMeter()
 
   bar = tqdm(desc = "Training", total = len(train_queue), leave = False)
   arcstep_flag = 0
   i = valid_queue
+  train_param = pytorch_total_params_train
+
   for step, (input, target) in enumerate(train_queue):
     model.train()
 
@@ -338,23 +334,31 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
     input_search = Variable(input_search, requires_grad=False).to(device)
     target_search = Variable(target_search, requires_grad=False).to(device)
 
-    # epochs >= 15 -> 2
-    if epoch>=2:
+    # epochs >= 15 -> 2 -> 15
+    if epoch>=15:
       # if arcstep_flag == 0:
-      
+      model_copy = model
+      genotype = model.genotype()
+      # model2 = Network2(args.init_channels, CIFAR_CLASSES, args.layers, args.auxiliary, genotype)
+      model2 = Network2(36, 10, 20, args.auxiliary, genotype)
+      pytorch_total_params_train = sum(p.numel() for p in model2.parameters() if p.requires_grad)
+
       if pytorch_total_params_train > limit_param :
-        if step == max_step:
+        # if step == max_step:
         # if step == 0:
-          num_flag = 1
-          architect.param_step(input, target, input_search, target_search, lr, optimizer,pytorch_total_params_train,step,limit_param, num_flag,lambda_a)
-          # print(model.arch_parameters())
-          # arcstep_flag = 1
-          # top1_val.update(acc_x.data.item(), n)
+        num_flag = 1
+        train_param, genotype = architect.param_step(input, target, input_search, target_search, lr, optimizer,pytorch_total_params_train,step,limit_param, num_flag,lambda_a,param_prev)
+        # print(model.arch_parameters())
+        # arcstep_flag = 1
+        # top1_val.update(acc_x.data.item(), n)
+        # print(train_param,param_prev)
+        param_prev = train_param
 
       else:
+        model = model_copy
         architect.step(input, target, input_search, target_search, lr, optimizer,pytorch_total_params_train,step,limit_param,num_flag, unrolled=args.unrolled)
         # top1_val.update(acc_x.data.item(), n)
-      
+        param_prev = pytorch_total_params_train
 
 
     num_flag = 0
@@ -372,16 +376,23 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr,e
     top1.update(prec1.data.item(), n)
     top5.update(prec5.data.item(), n)
 
+    if epoch == 1:
+      param_prev = pytorch_total_params_train
+
     # bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f} Val Acc: {1:.6f}".format(objs.avg, top1.avg, top1_val.avg))
-    bar.set_description("Loss: {0:.6f}, Accuracy: {1:.6f}".format(objs.avg, top1.avg))
+    bar.set_description("Loss: {0:.6f}, Acc: {1:.6f} param:{2}".format(objs.avg, top1.avg, param_prev))
     bar.update()
+
+    with open(csv_file_path_param_ite, 'a') as f:
+      writer = csv.writer(f)
+      writer.writerow([param_prev,genotype,objs.avg,top1.avg,epoch])
 
     # if step % args.report_freq == 0:
       # logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
   bar.close()
   if epoch == 1:
     max_step = step
-  return top1.avg, objs.avg, max_step
+  return top1.avg, objs.avg, max_step, param_prev, genotype
 
 
 def infer(valid_queue, model, criterion,device,num_flag):
@@ -423,4 +434,3 @@ def infer(valid_queue, model, criterion,device,num_flag):
 
 if __name__ == '__main__':
   main() 
-
